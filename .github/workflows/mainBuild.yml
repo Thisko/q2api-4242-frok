@@ -9,6 +9,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Create Tag
+        run: |
+          git tag v1.0.0
+          git push origin v1.0.0
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
