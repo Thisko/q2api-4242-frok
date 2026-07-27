@@ -1,0 +1,41 @@
+name: Build & Release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.playwright
+          platforms: linux/arm64
+          load: true
+          tags: qwen-2api:playwright
+
+      - name: Save Docker image as tar
+        run: |
+          docker save -o qwen-2api-playwright-arm64.tar qwen-2api:playwright
+          gzip -9 qwen-2api-playwright-arm64.tar
+          echo "size=$(du -h qwen-2api-playwright-arm64.tar.gz | cut -f1)" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: qwen-2api-playwright-arm64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - n
+ame: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: qwen-2api-playwright-arm64.tar.gz
