@@ -23,18 +23,18 @@ jobs:
 
       - name: Save Docker image as tar
         run: |
-          docker save -o qwen-2api-playwright-arm64.tar qwen-2api:playwright
+          docker save qwen-2api:playwright -o qwen-2api-playwright-arm64.tar
           gzip -9 qwen-2api-playwright-arm64.tar
-          echo "size=$(du -h qwen-2api-playwright-arm64.tar.gz | cut -f1)" >> $GITHUB_OUTPUT
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: qwen-2api-playwright-arm64.tar.gz
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload to Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: qwen-2api-playwright-arm64.tar.gz
