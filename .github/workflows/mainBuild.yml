@@ -34,8 +34,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - n
-ame: Upload to Release
+      - name: Upload to Release
         uses: softprops/action-gh-release@v1
         with:
           files: qwen-2api-playwright-arm64.tar.gz
