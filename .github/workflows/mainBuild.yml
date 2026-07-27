@@ -18,6 +18,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          GIT_REMOTE_URL=$(git remote get-url origin | sed "s|https://github.com/|https://x-access-token:${GITHUB_TOKEN}@github.com/|")
+          git remote set-url origin "$GIT_REMOTE_URL"
           git tag v1.0.1
           git push origin v1.0.1
         env:
@@ -44,6 +46,5 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: qwen-2api-playwright-arm64.tar.gz
-          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
