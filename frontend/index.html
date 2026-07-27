@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Qwen-2API 管理面板</title>
+  <style>
+    :root {
+      --bg: #101418;
+      --surface: #171d23;
+      --panel: #1d252c;
+      --border: #2b3741;
+      --text: #e7edf2;
+      --muted: #9aa8b4;
+      --good: #33c27f;
+      --warn: #e0b84d;
+      --bad: #e35d6a;
+      --accent: #4f8cff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      line-height: 1.5;
+    }
+    .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 { font-size: 22px; margin: 0; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+    .muted { color: var(--muted); font-size: 13px; }
+    .toolbar { display: flex; gap: 8px; align-items: center; }
+    button, select, input {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    button { cursor: pointer; }
+    button:hover { border-color: var(--accent); }
+    .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+    .stat .label { color: var(--muted); font-size: 12px; }
+    .stat .value { font-size: 24px; font-weight: 700; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 9px 8px; border-bottom: 1px solid var(--border); text-align: left; }
+    th { color: var(--muted); font-weight: 600; }
+    .good { color: var(--good); }
+    .warn { color: var(--warn); }
+    .bad { color: var(--bad); }
+    .forms { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .form-row { display: grid; gap: 8px; margin-bottom: 8px; }
+    .message { min-height: 20px; color: var(--muted); font-size: 13px; }
+    .models { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; }
+    .model {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 9px;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 760px) {
+      header, .toolbar { align-items: stretch; flex-direction: column; }
+      .grid, .forms { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Qwen-2API 管理面板</h1>
+        <div class="muted">轻量 OpenAI 兼容代理</div>
+      </div>
+      <div class="toolbar">
+        <input id="apiKey" type="password" placeholder="API_KEY">
+        <button id="saveKey">保存密钥</button>
+        <select id="interval">
+          <option value="5000">5 秒</option>
+          <option value="10000" selected>10 秒</option>
+          <option value="30000">30 秒</option>
+          <option value="0">关闭</option>
+        </select>
+        <button id="refresh">刷新</button>
+      </div>
+    </header>
+
+    <section class="grid">
+      <div class="card stat"><div class="label">状态</div><div class="value good" id="status">-</div></div>
+      <div class="card stat"><div class="label">可用账号</div><div class="value" id="available">-</div></div>
+      <div class="card stat"><div class="label">活跃请求</div><div class="value" id="active">-</div></div>
+      <div class="card stat"><div class="label">队列</div><div class="value" id="queue">-</div></div>
+    </section>
+
+    <section class="card">
+      <h2>令牌池</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr><th>账号</th><th>状态</th><th>过期</th><th>活跃/最大</th><th>冷却</th><th>错误</th></tr>
+          </thead>
+          <tbody id="pool"><tr><td colspan="6" class="muted">加载中...</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>令牌管理</h2>
+      <div class="forms">
+        <form id="addTokenForm">
+          <div class="form-row">
+            <label class="muted">添加 JWT 令牌</label>
+            <input id="tokenInput" autocomplete="off" placeholder="粘贴 Qwen JWT">
+          </div>
+          <button type="submit">添加令牌</button>
+          <div class="message" id="tokenMsg"></div>
+        </form>
+        <form id="loginForm">
+          <div class="form-row">
+            <label class="muted">登录添加</label>
+            <input id="emailInput" type="email" autocomplete="username" placeholder="邮箱">
+            <input id="passwordInput" type="password" autocomplete="current-password" placeholder="密码">
+          </div>
+          <button type="submit">登录</button>
+          <div class="message" id="loginMsg"></div>
+        </form>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>模型</h2>
+      <div class="models" id="models"><div class="muted">加载中...</div></div>
+    </section>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let timer = null;
+
+    function escHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    function storedApiKey() {
+      try {
+        const value = localStorage.getItem('qwen2api_api_key');
+        return value && value.trim() ? value.trim() : '';
+      } catch {
+        return '';
+      }
+    }
+
+    function authHeaders() {
+      const key = storedApiKey();
+      return key ? { Authorization: `Bearer ${key}` } : {};
+    }
+
+    function fmtTime(iso) {
+      if (!iso) return '-';
+      const diff = new Date(iso) - new Date();
+      if (diff <= 0) return '<span class="bad">已过期</span>';
+      const minutes = Math.floor(diff / 60000);
+      if (minutes > 1440) return `${Math.floor(minutes / 1440)} 天`;
+      if (minutes > 60) return `${Math.floor(minutes / 60)} 时 ${minutes % 60} 分`;
+      return `${minutes} 分`;
+    }
+
+    function fmtCooldown(ms) {
+      if (!ms || ms <= 0) return '-';
+      const seconds = Math.ceil(ms / 1000);
+      if (seconds > 60) return `${Math.ceil(seconds / 60)} 分`;
+      return `${seconds} 秒`;
+    }
+
+    async function apiFetch(path, options = {}) {
+      const headers = { ...authHeaders(), ...(options.headers || {}) };
+      return fetch(path, { ...options, headers });
+    }
+
+    function renderStats(data) {
+      const status = data.poolStatus || {};
+      $('status').textContent = data.status || '-';
+      $('available').textContent = status.available ?? 0;
+      $('active').textContent = status.activeRequests ?? 0;
+      $('queue').textContent = `${data.queue?.queued ?? 0}/${data.queue?.maxQueueSize ?? 0}`;
+
+      const rows = (data.pool || []).map((item) => {
+        const statusClass = item.status === 'valid' ? 'good' : item.status === 'rate_limited' ? 'warn' : 'bad';
+        const statusText = escHtml(item.statusText || item.status);
+        const errorInfo = item.lastError ? ` - ${escHtml(item.lastError)}` : '';
+        return `<tr>
+          <td>${escHtml(item.email || '-')}</td>
+          <td class="${statusClass}">${statusText}</td>
+          <td>${fmtTime(item.expiresAt)}</td>
+          <td>${item.activeRequests}/${item.maxConcurrent}</td>
+          <td>${fmtCooldown(item.cooldownRemainingMs)}</td>
+          <td>${item.errorCount}${errorInfo}</td>
+        </tr>`;
+      }).join('');
+      $('pool').innerHTML = rows || '<tr><td colspan="6" class="muted">没有账号或令牌</td></tr>';
+    }
+
+    function renderModels(data) {
+      const models = data.data || [];
+      $('models').innerHTML = models.slice(0, 120).map((m) => `<div class="model">${escHtml(m.id)}</div>`).join('')
+        || '<div class="muted">暂无模型</div>';
+    }
+
+    async function refresh() {
+      const statsRes = await apiFetch('/admin/api/stats');
+      if (statsRes.status === 401) {
+        $('status').textContent = '401';
+        return;
+      }
+      if (statsRes.ok) renderStats(await statsRes.json());
+
+      const modelRes = await apiFetch('/v1/models');
+      if (modelRes.ok) renderModels(await modelRes.json());
+    }
+
+    function setupTimer() {
+      if (timer) clearInterval(timer);
+      const ms = Number.parseInt($('interval').value, 10);
+      if (ms > 0) timer = setInterval(refresh, ms);
+    }
+
+    $('apiKey').value = storedApiKey();
+    $('saveKey').addEventListener('click', () => {
+      localStorage.setItem('qwen2api_api_key', $('apiKey').value.trim());
+      refresh();
+    });
+    $('refresh').addEventListener('click', refresh);
+    $('interval').addEventListener('change', setupTimer);
+
+    $('addTokenForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      $('tokenMsg').textContent = '添加中...';
+      const res = await apiFetch('/admin/api/token/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: $('tokenInput').value.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      $('tokenMsg').textContent = res.ok ? '添加成功' : (data.error?.message || '添加失败');
+      if (res.ok) $('tokenInput').value = '';
+      refresh();
+    });
+
+    $('loginForm').addEventListener('submit', async (event) => {
+      event.preventDefault();
+      $('loginMsg').textContent = '登录中...';
+      const res = await apiFetch('/admin/api/token/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: $('emailInput').value.trim(), password: $('passwordInput').value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      $('loginMsg').textContent = res.ok ? '登录成功' : (data.error?.message || '登录失败');
+      if (res.ok) $('passwordInput').value = '';
+      refresh();
+    });
+
+    refresh();
+    setupTimer();
+  </script>
+</body>
+</html>

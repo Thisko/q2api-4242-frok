@@ -1,0 +1,15 @@
+node_modules
+.git
+.agents
+accounts
+chrome-profile-*
+logs
+tmp
+*.log
+*.png
+.env
+tmp_probe_*
+qwen-register*
+data
+release
+dist
