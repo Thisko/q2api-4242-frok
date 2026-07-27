@@ -41,8 +41,7 @@ jobs:
           gzip -9 qwen-2api-playwright-arm64.tar
 
       - name: Create Release
-        uses: softprops/
-action-gh-release@v1
+        uses: softprops/action-gh-release@v1
         with:
           files: qwen-2api-playwright-arm64.tar.gz
           generate_release_notes: true
