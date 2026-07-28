@@ -6,7 +6,7 @@
 services:
   qwen-2api:
     container_name: qwen-2api
-    image: qwen-2api:1.2.0-arm64
+    image: ghcr.io/thisko/q2api:latest
     restart: unless-stopped
     ports:
       - "3000:3000"
@@ -39,7 +39,7 @@ services:
   # 主服务通过 HTTP 调用它的 /harvest 接口； Chromium 只在这个容器里
   waf-harvester:
     container_name: waf-harvester
-    image: waf-harvester:1.0.0-arm64
+    image: ghcr.io/thisko/qwaf-harvester:latest
     restart: unless-stopped
     environment:
       PORT: "3100"

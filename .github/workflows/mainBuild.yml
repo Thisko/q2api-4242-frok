@@ -8,9 +8,12 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   PLATFORM: linux/arm64
+  MAIN_IMAGE: ghcr.io/thisko/q2api
+  HARVESTER_IMAGE: ghcr.io/thisko/qwaf-harvester
 
 jobs:
   build:
@@ -38,38 +41,49 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build qwen-2api (lightweight main image)
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push qwen-2api (lightweight main image)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
           platforms: ${{ env.PLATFORM }}
-          load: true
-          tags: qwen-2api:1.2.0-arm64
+          push: true
+          tags: |
+            ${{ env.MAIN_IMAGE }}:${{ env.BUILD_TAG }}
+            ${{ env.MAIN_IMAGE }}:latest
           cache-from: type=gha,scope=qwen-2api
           cache-to: type=gha,mode=max,scope=qwen-2api
 
-      - name: Build waf-harvester (Chromium sidecar)
+      - name: Build & push waf-harvester (Chromium sidecar)
         uses: docker/build-push-action@v6
         with:
           context: ./waf-harvester
           file: ./waf-harvester/Dockerfile
           platforms: ${{ env.PLATFORM }}
-          load: true
-          tags: waf-harvester:1.0.0-arm64
+          push: true
+          tags: |
+            ${{ env.HARVESTER_IMAGE }}:${{ env.BUILD_TAG }}
+            ${{ env.HARVESTER_IMAGE }}:latest
           cache-from: type=gha,scope=waf-harvester
           cache-to: type=gha,mode=max,scope=waf-harvester
 
-      - name: Save & compress both images
+      - name: Save & compress both images (for tar download fallback)
         run: |
           mkdir -p dist
-          # qwen-2api 主镜像（轻量，无 zstd 压缩也够小，但仍压缩省带宽）
+          docker pull ${{ env.MAIN_IMAGE }}:${{ env.BUILD_TAG }}
+          docker pull ${{ env.HARVESTER_IMAGE }}:${{ env.BUILD_TAG }}
           QA_SRC="dist/qwen-2api-${BUILD_TAG}-arm64.tar"
-          docker save qwen-2api:1.2.0-arm64 -o "$QA_SRC"
+          docker save ${{ env.MAIN_IMAGE }}:${{ env.BUILD_TAG }} -o "$QA_SRC"
           zstd -T0 -19 --long=31 "$QA_SRC" && rm -f "$QA_SRC"
-          # waf-harvester 侧车（含 Chromium，较大，必须压缩）
           WH_SRC="dist/waf-harvester-${BUILD_TAG}-arm64.tar"
-          docker save waf-harvester:1.0.0-arm64 -o "$WH_SRC"
+          docker save ${{ env.HARVESTER_IMAGE }}:${{ env.BUILD_TAG }} -o "$WH_SRC"
           zstd -T0 -19 --long=31 "$WH_SRC" && rm -f "$WH_SRC"
           ls -lh dist/
           echo "QA_ZST=qwen-2api-${BUILD_TAG}-arm64.tar.zst" >> "$GITHUB_ENV"
@@ -101,15 +115,18 @@ jobs:
             dist/qwen-2api-${{ env.BUILD_TAG }}-arm64.tar.zst
             dist/waf-harvester-${{ env.BUILD_TAG }}-arm64.tar.zst
           body: |
-            ## 侧车架构镜像（arm64，zstd 压缩）
+            ## 侧车架构镜像（arm64）
 
-            两个镜像都需下载并 load：
-            - `qwen-2api-*-arm64.tar.zst` — 主服务（轻量，无 Chromium）
-            - `waf-harvester-*-arm64.tar.zst` — WAF 采集器（含 Chromium）
-
-            ### 在 N1 上
+            ### 方式一：直接从 GHCR 拉取（推荐）
             ```bash
-            # OpenWrt 装 zstd：opkg install zstd
+            docker pull ${{ env.MAIN_IMAGE }}:${{ env.BUILD_TAG }}
+            docker pull ${{ env.HARVESTER_IMAGE }}:${{ env.BUILD_TAG }}
+            ```
+            然后用 `docker-compose.n1.yml`（把 image 改成上面的地址）启动。
+
+            ### 方式二：下载 tar + load（无外网时）
+            ```bash
+            opkg install zstd   # OpenWrt 装解压工具
             zstd -d qwen-2api-${{ env.BUILD_TAG }}-arm64.tar.zst
             zstd -d waf-harvester-${{ env.BUILD_TAG }}-arm64.tar.zst
             docker load -i qwen-2api-${{ env.BUILD_TAG }}-arm64.tar
@@ -121,19 +138,18 @@ jobs:
       - name: Summary
         run: |
           {
-          echo "## 双镜像 arm64 构建完成 🎉"
+          echo "## 双镜像 arm64 构建并推送到 GHCR 完成 🎉"
           echo ""
-          echo "| 产物 | 大小 |"
-          echo "|------|------|"
-          echo "| \`qwen-2api\`     | $(du -h dist/${QA_ZST} | cut -f1) |"
-          echo "| \`waf-harvester\` | $(du -h dist/${WH_ZST} | cut -f1) |"
+          echo "| 镜像 | pull 命令 |"
+          echo "|------|-----------|"
+          echo "| 主服务 | \`docker pull ${MAIN_IMAGE}:${BUILD_TAG}\` |"
+          echo "| harvester | \`docker pull ${HARVESTER_IMAGE}:${BUILD_TAG}\` |"
           echo ""
-          echo "### 在 N1 上使用"
+          echo "### N1 上直接拉取使用"
           echo '```bash'
-          echo "zstd -d ${QA_ZST}"
-          echo "zstd -d ${WH_ZST}"
-          echo "docker load -i qwen-2api-${BUILD_TAG}-arm64.tar"
-          echo "docker load -i waf-harvester-${BUILD_TAG}-arm64.tar"
+          echo "docker pull ${MAIN_IMAGE}:${BUILD_TAG}"
+          echo "docker pull ${HARVESTER_IMAGE}:${BUILD_TAG}"
+          echo "# 在 docker-compose.n1.yml 里把 image: 改成上面的地址，或用 :latest"
           echo "docker compose -f docker-compose.n1.yml up -d"
           echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
