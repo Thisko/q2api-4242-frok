@@ -10,12 +10,15 @@ const CACHE_FILE = resolve(process.env.WAF_COOKIE_CACHE || resolve(ROOT, 'data',
 const HARVEST_SCRIPT = resolve(__dirname, 'waf-harvest.mjs');
 const REFRESH_MS = Number.parseInt(process.env.WAF_COOKIE_REFRESH_MS || '', 10) || 20 * 60 * 1000;
 const WARMUP_MS = Number.parseInt(process.env.WAF_COOKIE_WARMUP_MS || '', 10) || 5000;
-// Default OFF: no Playwright. Enable only when you explicitly want browser harvest.
-const AUTO_HARVEST = ['1', 'true', 'yes', 'on'].includes(String(process.env.WAF_AUTO_HARVEST || '').toLowerCase());
+// 强制无头浏览器采集：默认始终启用 Playwright auto-harvest。
+// 仅当显式设置 WAF_AUTO_HARVEST=0 时才关闭（本地调试用），生产环境永远走浏览器。
+const AUTO_HARVEST = !['0', 'false', 'no', 'off'].includes(String(process.env.WAF_AUTO_HARVEST || '').trim().toLowerCase());
 const REQUIRED_COOKIES = ['ssxmod_itna', 'tfstk', 'acw_tc'];
+const HARVEST_MAX_RETRIES = Number.parseInt(process.env.WAF_HARVEST_RETRIES || '', 10) || 3;
+const HARVEST_RETRY_DELAY_MS = Number.parseInt(process.env.WAF_HARVEST_RETRY_DELAY_MS || '', 10) || 5000;
 
 mkdirSync(dirname(CACHE_FILE), { recursive: true });
-if (AUTO_HARVEST) mkdirSync(PROFILE_DIR, { recursive: true });
+mkdirSync(PROFILE_DIR, { recursive: true });
 
 const state = {
   cookieHeader: '',
@@ -39,7 +42,6 @@ function normalizeCookies(input) {
   if (typeof input === 'string') {
     const header = input.trim();
     if (!header) return [];
-    // Support raw Cookie header: "a=b; c=d"
     return header.split(';').map((part) => part.trim()).filter(Boolean).map((part) => {
       const idx = part.indexOf('=');
       if (idx <= 0) return null;
@@ -77,7 +79,6 @@ function normalizeCookies(input) {
     if (Array.isArray(input.cookies)) return normalizeCookies(input.cookies);
     if (typeof input.cookie === 'string') return normalizeCookies(input.cookie);
     if (typeof input.cookieHeader === 'string') return normalizeCookies(input.cookieHeader);
-    // map form: { ssxmod_itna: '...', tfstk: '...' }
     return Object.entries(input)
       .filter(([k, v]) => k && v != null && !['refreshedAt', 'source'].includes(k))
       .map(([name, value]) => ({ name, value: String(value), domain: '.qwen.ai' }));
@@ -96,7 +97,7 @@ function missingRequired(cookies) {
   return REQUIRED_COOKIES.filter((name) => !names.has(name));
 }
 
-function applyCookies(cookies, { refreshedAt = Date.now(), source = 'import', persist = true } = {}) {
+function applyCookies(cookies, { refreshedAt = Date.now(), source = 'playwright-harvest', persist = true } = {}) {
   const normalized = normalizeCookies(cookies);
   if (!hasRequiredCookies(normalized)) {
     throw new Error(
@@ -124,23 +125,8 @@ function applyCookies(cookies, { refreshedAt = Date.now(), source = 'import', pe
   return state.cookieHeader;
 }
 
-function loadFromEnv() {
-  const rawJson = process.env.WAF_COOKIES_JSON?.trim();
-  const rawHeader = process.env.WAF_COOKIE?.trim() || process.env.WAF_COOKIES?.trim();
-  if (rawJson) {
-    try {
-      const parsed = JSON.parse(rawJson);
-      return applyCookies(parsed, { source: 'env:WAF_COOKIES_JSON', persist: true });
-    } catch (err) {
-      state.lastError = `Invalid WAF_COOKIES_JSON: ${err.message}`;
-    }
-  }
-  if (rawHeader) {
-    return applyCookies(rawHeader, { source: 'env:WAF_COOKIE', persist: true });
-  }
-  return null;
-}
-
+// 仅从缓存文件读取（Playwright 采集成功后持久化的 cookie）。
+// 不再读取任何手动导入的环境变量。
 function loadCachedCookies({ ignoreAge = false } = {}) {
   try {
     if (!existsSync(CACHE_FILE)) return null;
@@ -149,9 +135,7 @@ function loadCachedCookies({ ignoreAge = false } = {}) {
     if (!cookies.length || !hasRequiredCookies(cookies)) return null;
     const refreshedAt = raw.refreshedAt || Date.now();
     const age = Date.now() - refreshedAt;
-    // External cookies are reused until WAF fails or user replaces them.
-    // Age limit only applies when auto-harvest is enabled.
-    if (!ignoreAge && AUTO_HARVEST && REFRESH_MS > 0 && age > REFRESH_MS) return null;
+    if (!ignoreAge && REFRESH_MS > 0 && age > REFRESH_MS) return null;
     return applyCookies(cookies, {
       refreshedAt,
       source: raw.source || 'cache',
@@ -212,34 +196,30 @@ function runHarvestChild() {
   });
 }
 
-async function harvestWithOptionalPlaywright() {
-  if (!AUTO_HARVEST) {
-    throw new Error(
-      'No valid WAF cookies. Import browser cookies via POST /admin/api/waf/import or set WAF_COOKIE / data/waf-cookies.json. ' +
-      'Playwright auto-harvest is disabled (set WAF_AUTO_HARVEST=1 only if you intentionally install playwright).'
-    );
+// 带 retry 的采集，避免偶发失败卡死服务。
+async function harvestWithRetry() {
+  let lastErr;
+  for (let attempt = 1; attempt <= HARVEST_MAX_RETRIES; attempt++) {
+    try {
+      const cookies = await runHarvestChild();
+      return applyCookies(cookies, { source: `playwright-harvest(#${attempt})`, persist: true });
+    } catch (err) {
+      lastErr = err;
+      console.warn(`WAF harvest attempt ${attempt}/${HARVEST_MAX_RETRIES} failed: ${err.message}`);
+      if (attempt < HARVEST_MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, HARVEST_RETRY_DELAY_MS));
+      }
+    }
   }
-  try {
-    await import('playwright');
-  } catch {
-    throw new Error(
-      'WAF_AUTO_HARVEST=1 but playwright is not installed. Prefer external cookie import for lightweight deploy.'
-    );
-  }
-  const cookies = await runHarvestChild();
-  return applyCookies(cookies, { source: 'playwright-harvest', persist: true });
+  throw new Error(`WAF harvest failed after ${HARVEST_MAX_RETRIES} attempts: ${lastErr?.message || lastErr}`);
 }
 
 async function refreshWafSession({ force = false } = {}) {
   try {
-    // Always prefer external/env/file cookies first.
-    const fromEnv = loadFromEnv();
-    if (fromEnv) return fromEnv;
-
-    const cached = loadCachedCookies({ ignoreAge: force || !AUTO_HARVEST });
+    // 缓存里如果有未过期的 cookie，先用着；否则强制浏览器采集。
+    const cached = loadCachedCookies({ ignoreAge: force });
     if (cached) return cached;
-
-    return await harvestWithOptionalPlaywright();
+    return await harvestWithRetryAndCheck();
   } catch (err) {
     state.lastError = err.message || String(err);
     console.warn('WAF session refresh failed:', state.lastError);
@@ -247,20 +227,30 @@ async function refreshWafSession({ force = false } = {}) {
   }
 }
 
+async function harvestWithRetryAndCheck() {
+  if (!AUTO_HARVEST) {
+    // 仅本地显式关闭时才走到这里。
+    throw new Error(
+      'AUTO_HARVEST is disabled (WAF_AUTO_HARVEST=0). Re-enable it or run on the playwright image.'
+    );
+  }
+  try {
+    await import('playwright');
+  } catch {
+    throw new Error(
+      'Playwright is not installed. Run on the playwright image (Dockerfile.playwright).'
+    );
+  }
+  return harvestWithRetry();
+}
+
 export async function ensureWafSession({ force = false } = {}) {
   if (!force) {
-    if (state.cookieHeader && (!AUTO_HARVEST || Date.now() - state.refreshedAt < REFRESH_MS || REFRESH_MS <= 0)) {
+    if (state.cookieHeader && Date.now() - state.refreshedAt < REFRESH_MS) {
       return state.cookieHeader;
     }
-    if (state.cookieHeader && AUTO_HARVEST && Date.now() - state.refreshedAt < REFRESH_MS) {
-      return state.cookieHeader;
-    }
-    const warmed = loadFromEnv() || loadCachedCookies({ ignoreAge: !AUTO_HARVEST });
+    const warmed = loadCachedCookies({ ignoreAge: !AUTO_HARVEST });
     if (warmed) return warmed;
-  } else if (!AUTO_HARVEST) {
-    // Force without playwright: reload external sources only.
-    const reloaded = loadFromEnv() || loadCachedCookies({ ignoreAge: true });
-    if (reloaded) return reloaded;
   }
 
   if (state.refreshing) return state.refreshing;
@@ -271,10 +261,6 @@ export async function ensureWafSession({ force = false } = {}) {
   return state.refreshing;
 }
 
-export function importWafCookies(input, source = 'api-import') {
-  return applyCookies(input, { source, persist: true, refreshedAt: Date.now() });
-}
-
 export function getWafCookieHeader() {
   return state.cookieHeader || '';
 }
@@ -282,7 +268,7 @@ export function getWafCookieHeader() {
 export function getWafSessionInfo() {
   return {
     ready: Boolean(state.cookieHeader),
-    mode: AUTO_HARVEST ? 'auto-harvest-optional' : 'external-cookie',
+    mode: AUTO_HARVEST ? 'headless-browser' : 'disabled',
     autoHarvest: AUTO_HARVEST,
     source: state.source || '',
     cookieCount: state.cookies.length,
@@ -293,6 +279,7 @@ export function getWafSessionInfo() {
     ageMs: state.refreshedAt ? Date.now() - state.refreshedAt : null,
     refreshMs: REFRESH_MS,
     lastError: state.lastError || '',
+    maxRetries: HARVEST_MAX_RETRIES,
   };
 }
 
@@ -313,9 +300,9 @@ export function isWafHtml(text = '') {
   );
 }
 
-// Warm from env/file on import. Never launches Playwright here.
+// 启动时预热：读取缓存（如果有且未过期），否则不阻塞地后台触发一次采集。
 try {
-  loadFromEnv() || loadCachedCookies({ ignoreAge: true });
+  loadCachedCookies({ ignoreAge: true });
 } catch (err) {
   state.lastError = err.message || String(err);
 }

@@ -54,4 +54,3 @@ docker compose -f docker-compose.playwright.yml up -d --build
 - N1 架构是 `linux/arm64`
 - VPS 若是 amd64，必须用 buildx 的 `--platform linux/arm64`
 - Playwright 镜像 tar 可能数 GB，轻量版小很多
-# q2api-4242-frok

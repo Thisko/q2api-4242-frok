@@ -18,7 +18,7 @@ import { settings } from './config.js';
 import { handleOpenAICompletion } from './openai.js';
 import { getModelPayload, getModels, handleOpenAIModels } from './models.js';
 import { getQueueInfo } from './queue.js';
-import { ensureWafSession, getWafSessionInfo, importWafCookies } from './waf-session.js';
+import { ensureWafSession, getWafSessionInfo } from './waf-session.js';
 
 const app = express();
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -97,20 +97,6 @@ app.get('/admin/api/stats', (req, res) => {
   res.json(serviceStatus());
 });
 
-// Import browser WAF cookies (preferred lightweight path; no Playwright).
-// Body examples:
-//   { "cookie": "ssxmod_itna=...; tfstk=...; acw_tc=..." }
-//   { "cookies": [{ "name":"ssxmod_itna", "value":"..." }, ...] }
-app.post('/admin/api/waf/import', (req, res) => {
-  try {
-    const payload = req.body?.cookie || req.body?.cookies || req.body?.cookieHeader || req.body;
-    importWafCookies(payload, 'api-import');
-    return res.json({ success: true, waf: getWafSessionInfo() });
-  } catch (err) {
-    return res.status(400).json({ error: { message: err.message }, waf: getWafSessionInfo() });
-  }
-});
-
 app.post('/admin/api/waf/refresh', async (req, res) => {
   try {
     await ensureWafSession({ force: true });
@@ -170,15 +156,14 @@ app.listen(settings.port, async () => {
   const wafInfo = getWafSessionInfo();
   if (wafInfo.ready) {
     console.log(`WAF cookies ready via ${wafInfo.source || 'cache'} (${wafInfo.cookieCount})`);
+    if (wafInfo.mode === 'headless-browser' && (wafInfo.ageMs == null || wafInfo.ageMs > (wafInfo.refreshMs || 0))) {
+      ensureWafSession({ force: false }).catch((err) => console.warn('WAF background refresh skipped:', err.message));
+    }
   } else {
-    console.warn(
-      'WAF cookies missing. Import from a real browser: POST /admin/api/waf/import  ' +
-      'or put cookie file at data/waf-cookies.json / set WAF_COOKIE. ' +
-      'Playwright auto-harvest stays OFF unless WAF_AUTO_HARVEST=1.'
-    );
-    // Do not launch browser by default.
-    ensureWafSession({ force: false }).catch((err) => {
-      console.warn('WAF warmup skipped/failed:', err.message);
+    console.warn('WAF cookies missing — launching headless browser to harvest...');
+    ensureWafSession({ force: true }).catch((err) => {
+      console.warn('WAF headless harvest failed on startup:', err.message);
+      console.warn('Service will retry on the next request. Ensure the playwright image is used.');
     });
   }
 });

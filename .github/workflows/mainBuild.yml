@@ -25,7 +25,6 @@ jobs:
           else
             VALUE="$(date +%Y%m%d)-${GITHUB_SHA::7}"
           fi
-          # 修剪首尾空白/换行，避免后续拼接文件名时夹带换行导致 glob 失配
           VALUE="$(printf '%s' "$VALUE" | tr -d '[:space:]')"
           echo "value=${VALUE}" >> "$GITHUB_OUTPUT"
           echo "BUILD_TAG=${VALUE}" >> "$GITHUB_ENV"
@@ -52,53 +51,61 @@ jobs:
           mkdir -p dist
           TAR="dist/qwen-2api-playwright-${BUILD_TAG}-arm64.tar"
           docker save qwen-2api:playwright -o "$TAR"
-          echo "TAR_PATH=$TAR" >> "$GITHUB_ENV"
+          echo "TAR_NAME=$(basename "$TAR")" >> "$GITHUB_ENV"
           ls -lh dist/
 
-      - name: Compress (zstd)
+      - name: Compress (zstd, max)
         run: |
           cd dist
           SRC="qwen-2api-playwright-${BUILD_TAG}-arm64.tar"
-          zstd -T0 -19 "$SRC" -o "${SRC}.zst"
+          zstd -T0 -19 --long=31 "$SRC"
+          rm -f "$SRC"
           ls -lh
+          ZST="$(ls *.tar.zst | head -1)"
+          echo "ZST_NAME=$ZST" >> "$GITHUB_ENV"
+          echo "ZST_SIZE_MB=$(du -m "$ZST" | cut -f1)" >> "$GITHUB_ENV"
 
-      - name: Upload artifact
+      - name: Upload artifact (tar.zst only)
         uses: actions/upload-artifact@v4
         with:
           name: qwen-2api-playwright-arm64
-          path: |
-            dist/qwen-2api-playwright-${{ env.BUILD_TAG }}-arm64.tar
-            dist/qwen-2api-playwright-${{ env.BUILD_TAG }}-arm64.tar.zst
+          path: dist/qwen-2api-playwright-${{ env.BUILD_TAG }}-arm64.tar.zst
           retention-days: 14
           compression-level: 0
 
-      - name: Create Release
+      - name: Create Release with zst
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: ncipollo/release-action@v1
+        uses: softprops/action-gh-release@v2
         with:
-          tag: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
           name: qwen-2api ${{ env.BUILD_TAG }}
-          # 用 glob 匹配 dist 下所有产物，避免变量拼接空格/换行导致匹配不上
-          files: |
-            dist/qwen-2api-playwright-*-arm64.tar
-            dist/qwen-2api-playwright-*-arm64.tar.zst
-          allowUpdates: true
+          files: dist/*.tar.zst
+          body: |
+            ## Playwright arm64 镜像（zstd 压缩）
+
+            下载 `*.tar.zst` 后在 N1 上：
+            ```bash
+            # OpenWrt 装 zstd：opkg install zstd
+            zstd -d qwen-2api-playwright-${{ env.BUILD_TAG }}-arm64.tar.zst
+            docker load -i qwen-2api-playwright-${{ env.BUILD_TAG }}-arm64.tar
+            docker compose -f docker-compose.playwright.yml up -d
+            ```
 
       - name: Summary
         run: |
-          ZST="dist/qwen-2api-playwright-${BUILD_TAG}-arm64.tar.zst"
-          SIZE=$(du -h "$ZST" | cut -f1)
           {
           echo "## Playwright arm64 构建完成 🎉"
           echo ""
           echo "| 产物 | 大小 |"
           echo "|------|------|"
-          echo "| \`$(basename "$ZST")\` | ${SIZE} |"
+          echo "| \`${ZST_NAME}\` | ${ZST_SIZE_MB} MB |"
           echo ""
-          echo "### 下载后在 N1 上使用"
+          echo "### 在 N1 上使用（zstd 压缩版）"
           echo '```bash'
-          echo "zstd -d $(basename "$ZST")"
-          echo "docker load -i qwen-2api-playwright-${BUILD_TAG}-arm64.tar"
+          echo "# OpenWrt 装 zstd：opkg install zstd"
+          echo "wget -O qwen.tar.zst '<release 下载链接>'"
+          echo "zstd -d qwen.tar.zst"
+          echo "docker load -i ${TAR_NAME}"
           echo "docker compose -f docker-compose.playwright.yml up -d"
           echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
