@@ -21,10 +21,14 @@ jobs:
         id: tag
         run: |
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            echo "value=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
+            VALUE="${GITHUB_REF##*/}"
           else
-            echo "value=$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+            VALUE="$(date +%Y%m%d)-${GITHUB_SHA::7}"
           fi
+          # 修剪首尾空白/换行，避免后续拼接文件名时夹带换行导致 glob 失配
+          VALUE="$(printf '%s' "$VALUE" | tr -d '[:space:]')"
+          echo "value=${VALUE}" >> "$GITHUB_OUTPUT"
+          echo "BUILD_TAG=${VALUE}" >> "$GITHUB_ENV"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -46,14 +50,16 @@ jobs:
       - name: Save image
         run: |
           mkdir -p dist
-          docker save qwen-2api:playwright -o "dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar"
+          TAR="dist/qwen-2api-playwright-${BUILD_TAG}-arm64.tar"
+          docker save qwen-2api:playwright -o "$TAR"
+          echo "TAR_PATH=$TAR" >> "$GITHUB_ENV"
           ls -lh dist/
 
       - name: Compress (zstd)
         run: |
           cd dist
-          zstd -T0 -19 "qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar" \
-            -o "qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar.zst"
+          SRC="qwen-2api-playwright-${BUILD_TAG}-arm64.tar"
+          zstd -T0 -19 "$SRC" -o "${SRC}.zst"
           ls -lh
 
       - name: Upload artifact
@@ -61,8 +67,8 @@ jobs:
         with:
           name: qwen-2api-playwright-arm64
           path: |
-            dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar
-            dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar.zst
+            dist/qwen-2api-playwright-${{ env.BUILD_TAG }}-arm64.tar
+            dist/qwen-2api-playwright-${{ env.BUILD_TAG }}-arm64.tar.zst
           retention-days: 14
           compression-level: 0
 
@@ -71,15 +77,16 @@ jobs:
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ github.ref_name }}
-          name: qwen-2api ${{ steps.tag.outputs.value }}
+          name: qwen-2api ${{ env.BUILD_TAG }}
+          # 用 glob 匹配 dist 下所有产物，避免变量拼接空格/换行导致匹配不上
           files: |
-            dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar
-            dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar.zst
+            dist/qwen-2api-playwright-*-arm64.tar
+            dist/qwen-2api-playwright-*-arm64.tar.zst
           allowUpdates: true
 
       - name: Summary
         run: |
-          ZST="dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar.zst"
+          ZST="dist/qwen-2api-playwright-${BUILD_TAG}-arm64.tar.zst"
           SIZE=$(du -h "$ZST" | cut -f1)
           {
           echo "## Playwright arm64 构建完成 🎉"
@@ -91,7 +98,7 @@ jobs:
           echo "### 下载后在 N1 上使用"
           echo '```bash'
           echo "zstd -d $(basename "$ZST")"
-          echo "docker load -i qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar"
+          echo "docker load -i qwen-2api-playwright-${BUILD_TAG}-arm64.tar"
           echo "docker compose -f docker-compose.playwright.yml up -d"
           echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
