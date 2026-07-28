@@ -493,3 +493,134 @@ export async function handleOpenAICompletion(req, res) {
     dispatchQueued();
   }
 }
+
+
+// ---- OpenAI-compatible image generation (/v1/images/generations) ----
+// 复用底层 t2i chat 流：把 prompt 作为单条 user message 调用 completion(chatMode='t2i')，
+// 收集所有 image 事件中的 CDN URL，按 OpenAI images 格式返回。
+export async function handleOpenAIImageGeneration(req, res) {
+  const {
+    model = 'qwen-image',
+    prompt,
+    n = 1,
+   size,
+    response_format = 'b64_json',
+   quality,
+   style,
+ } = req.body || {};
+
+  if (!prompt || typeof prompt !== 'string') {
+    return res.status(400).json({ error: { message: 'prompt is required and must be a string' } });
+  }
+
+  // 解析模型：支持 qwen-image / qwen-plus-image / <base>-image / <base>-t2i 等后缀
+  const { baseModel, chatMode } = parseModelMode(model);
+  // 如果用户没带 -image 后缀，强制走 t2i；否则尊重解析出的 chatMode（非 t2i 也校正为 t2i）
+  const effectiveChatMode = 't2i';
+  const effectiveModel = baseModel || 'qwen-image';
+
+  const requestId = `img-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const abortController = new AbortController();
+  let completed = false;
+  let clientClosed = false;
+
+  res.on('close', () => {
+    if (!completed && !res.writableEnded) {
+      clientClosed = true;
+      abortController.abort();
+    }
+  });
+
+  // n=1 是单张；Qwen t2i 单次请求即出一张，n>1 时并发多次请求
+  const count = Math.min(Math.max(parseInt(n, 10) || 1, 1), 10);
+  const messages = [{ role: 'user', content: prompt }];
+
+  async function generateOne() {
+    const slot = await enqueueRequest();
+    try {
+      const result = await completion({
+        token: slot.token,
+        model: effectiveModel,
+        messages,
+        chatMode: effectiveChatMode,
+        thinkingEnabled: false,
+        searchEnabled: false,
+        signal: abortController.signal,
+      });
+      const { body: streamBody } = result;
+      const urls = [];
+      let usage = null;
+      for await (const event of parseSSEStream(streamBody)) {
+        if (clientClosed || res.destroyed) break;
+        if (event.type === 'image' && event.content) {
+          urls.push(event.content);
+        } else if (event.type === 'done') {
+          usage = event.usage;
+        }
+      }
+      return { urls, slot, usage };
+    } catch (err) {
+      return { urls: [], slot, error: err };
+    }
+  }
+
+  try {
+    const tasks = [];
+    for (let i = 0; i < count; i++) tasks.push(generateOne());
+    const results = await Promise.all(tasks);
+
+    // 释放所有 slot
+    for (const r of results) r.slot?.release?.();
+    dispatchQueued();
+
+    const errors = results.filter(r => r.error);
+    if (errors.length === results.length) {
+      // 全失败
+      completed = true;
+      return res.status(500).json({
+        error: { message: errors[0].error?.message || 'image generation failed' },
+      });
+    }
+
+    const images = [];
+    for (const r of results) {
+      for (const url of r.urls) {
+        if (response_format === 'b64_json') {
+          try {
+            const imgRes = await fetch(url, { signal: abortController.signal });
+            if (!imgRes.ok) throw new Error(`CDN fetch ${imgRes.status}`);
+            const buf = Buffer.from(await imgRes.arrayBuffer());
+            images.push({ b64_json: buf.toString('base64'), revised_prompt: prompt });
+          } catch (e) {
+            // 下载失败则回退到 url
+            images.push({ url, revised_prompt: prompt });
+          }
+        } else {
+          images.push({ url, revised_prompt: prompt });
+        }
+      }
+    }
+
+    // 没拿到任何 URL 但也没全失败
+    if (!images.length) {
+      completed = true;
+      return res.status(500).json({
+        error: { message: 'image generation returned no images' },
+      });
+    }
+
+    completed = true;
+    res.json({
+      created: Math.floor(Date.now() / 1000),
+      data: images,
+    });
+  } catch (err) {
+    if (clientClosed || err.name === 'AbortError') return;
+    console.error('Image generation error:', err.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: { message: err.message } });
+    } else {
+      res.end();
+    }
+  }
+}

@@ -15,7 +15,7 @@ import {
   loginAndAddToken,
 } from './auth.js';
 import { settings } from './config.js';
-import { handleOpenAICompletion } from './openai.js';
+import { handleOpenAICompletion, handleOpenAIImageGeneration } from './openai.js';
 import { getModelPayload, getModels, handleOpenAIModels } from './models.js';
 import { getQueueInfo } from './queue.js';
 import { ensureWafSession, getWafSessionInfo } from './waf-session.js';
@@ -58,6 +58,8 @@ function serviceStatus() {
 }
 
 app.post('/v1/chat/completions', handleOpenAICompletion);
+
+app.post('/v1/images/generations', handleOpenAIImageGeneration);
 
 app.get('/v1/models', async (req, res) => {
   const slot = acquireToken();
