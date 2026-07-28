@@ -21,10 +21,13 @@ jobs:
         id: tag
         run: |
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            echo "value=${GITHUB_REF##*/}" >> $GITHUB_OUTPUT
+            echo "value=${GITHUB_REF##*/}" >> "$GITHUB_OUTPUT"
           else
-            echo "value=$(date +%Y%m%d)-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+            echo "value=$(date +%Y%m%d)-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -33,18 +36,62 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: .Dockerfile.playwright
+          file: ./Dockerfile.playwright
           platforms: linux/arm64
           load: true
           tags: qwen-2api:playwright
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Save image
         run: |
-          docker save qwen-2api:playwright -o qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar
+          mkdir -p dist
+          docker save qwen-2api:playwright -o "dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar"
+          ls -lh dist/
+
+      - name: Compress (zstd)
+        run: |
+          cd dist
+          zstd -T0 -19 "qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar" \
+            -o "qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar.zst"
+          ls -lh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qwen-2api-playwright-arm64
+          path: |
+            dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar
+            dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar.zst
+          retention-days: 14
+          compression-level: 0
 
       - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: ncipollo/release-action@v1
         with:
-          tag: v${{ steps.tag.outputs.value }}
+          tag: ${{ github.ref_name }}
           name: qwen-2api ${{ steps.tag.outputs.value }}
-          files: qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar
+          files: |
+            dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar
+            dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar.zst
+          allowUpdates: true
+
+      - name: Summary
+        run: |
+          ZST="dist/qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar.zst"
+          SIZE=$(du -h "$ZST" | cut -f1)
+          {
+          echo "## Playwright arm64 构建完成 🎉"
+          echo ""
+          echo "| 产物 | 大小 |"
+          echo "|------|------|"
+          echo "| \`$(basename "$ZST")\` | ${SIZE} |"
+          echo ""
+          echo "### 下载后在 N1 上使用"
+          echo '```bash'
+          echo "zstd -d $(basename "$ZST")"
+          echo "docker load -i qwen-2api-playwright-${{ steps.tag.outputs.value }}-arm64.tar"
+          echo "docker compose -f docker-compose.playwright.yml up -d"
+          echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
