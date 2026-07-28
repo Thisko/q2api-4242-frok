@@ -10,12 +10,16 @@ const CACHE_FILE = resolve(process.env.WAF_COOKIE_CACHE || resolve(ROOT, 'data',
 const HARVEST_SCRIPT = resolve(__dirname, 'waf-harvest.mjs');
 const REFRESH_MS = Number.parseInt(process.env.WAF_COOKIE_REFRESH_MS || '', 10) || 20 * 60 * 1000;
 const WARMUP_MS = Number.parseInt(process.env.WAF_COOKIE_WARMUP_MS || '', 10) || 5000;
-// 强制无头浏览器采集：默认始终启用 Playwright auto-harvest。
-// 仅当显式设置 WAF_AUTO_HARVEST=0 时才关闭（本地调试用），生产环境永远走浏览器。
+// 强制无头浏览器采集：默认始终启用。
+// 仅当显式设置 WAF_AUTO_HARVEST=0 时才关闭（本地调试用）。
 const AUTO_HARVEST = !['0', 'false', 'no', 'off'].includes(String(process.env.WAF_AUTO_HARVEST || '').trim().toLowerCase());
 const REQUIRED_COOKIES = ['ssxmod_itna', 'tfstk', 'acw_tc'];
 const HARVEST_MAX_RETRIES = Number.parseInt(process.env.WAF_HARVEST_RETRIES || '', 10) || 3;
 const HARVEST_RETRY_DELAY_MS = Number.parseInt(process.env.WAF_HARVEST_RETRY_DELAY_MS || '', 10) || 5000;
+// 远程 harvester 服务地址。设置后优先通过 HTTP 调用侧车容器采集 cookie，
+// 主进程不需要装 Playwright/Chromium（轻量镜像）。未设置时回退到本地 spawn 子进程。
+const HARVESTER_URL = (process.env.WAF_HARVESTER_URL || '').trim().replace(/\/+$/, '');
+const HARVEST_HTTP_TIMEOUT_MS = Number.parseInt(process.env.WAF_HARVEST_HTTP_TIMEOUT_MS || '', 10) || 90000;
 
 mkdirSync(dirname(CACHE_FILE), { recursive: true });
 mkdirSync(PROFILE_DIR, { recursive: true });
@@ -31,7 +35,7 @@ const state = {
 
 function cookieHeaderFromList(cookies) {
   return cookies
-    .filter((c) => c?.name && c?.value != null)
+    .filter((c) => c?.name && c.value != null)
     .map((c) => `${c.name}=${c.value}`)
     .join('; ');
 }
@@ -97,7 +101,7 @@ function missingRequired(cookies) {
   return REQUIRED_COOKIES.filter((name) => !names.has(name));
 }
 
-function applyCookies(cookies, { refreshedAt = Date.now(), source = 'playwright-harvest', persist = true } = {}) {
+function applyCookies(cookies, { refreshedAt = Date.now(), source = 'headless-harvest', persist = true } = {}) {
   const normalized = normalizeCookies(cookies);
   if (!hasRequiredCookies(normalized)) {
     throw new Error(
@@ -125,8 +129,6 @@ function applyCookies(cookies, { refreshedAt = Date.now(), source = 'playwright-
   return state.cookieHeader;
 }
 
-// 仅从缓存文件读取（Playwright 采集成功后持久化的 cookie）。
-// 不再读取任何手动导入的环境变量。
 function loadCachedCookies({ ignoreAge = false } = {}) {
   try {
     if (!existsSync(CACHE_FILE)) return null;
@@ -146,10 +148,35 @@ function loadCachedCookies({ ignoreAge = false } = {}) {
   }
 }
 
+// 优先通过 HTTP 调用远程 harvester 侧车服务采集 cookie。
+async function harvestViaHttp() {
+  if (!HARVESTER_URL) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HARVEST_HTTP_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${HARVESTER_URL}/harvest`, {
+      signal: controller.signal,
+      headers: { accept: 'application/json' },
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`harvester HTTP ${res.status}: ${text.slice(0, 300)}`);
+    }
+    const parsed = JSON.parse(text);
+    if (!parsed?.ok || !Array.isArray(parsed.cookies)) {
+      throw new Error(`harvester bad payload: ${text.slice(0, 300)}`);
+    }
+    return parsed.cookies;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 回退：本地 spawn 子进程跑 waf-harvest.mjs（需要主进程装了 playwright）。
 function runHarvestChild() {
   return new Promise((resolve, reject) => {
     if (!existsSync(HARVEST_SCRIPT)) {
-      reject(new Error('waf-harvest.mjs not found'));
+      reject(new Error('waf-harvest.mjs not found and WAF_HARVESTER_URL not set'));
       return;
     }
     const child = spawn(
@@ -196,13 +223,24 @@ function runHarvestChild() {
   });
 }
 
-// 带 retry 的采集，避免偶发失败卡死服务。
+async function runHarvest() {
+  // 1. 优先远程 HTTP harvester（侧车容器模式，主镜像无需 Chromium）
+  if (HARVESTER_URL) {
+    return harvestViaHttp();
+  }
+  // 2. 回退本地 spawn（需要主进程装 playwright，旧 playwright 镜像兼容）
+  return runHarvestChild();
+}
+
 async function harvestWithRetry() {
   let lastErr;
   for (let attempt = 1; attempt <= HARVEST_MAX_RETRIES; attempt++) {
     try {
-      const cookies = await runHarvestChild();
-      return applyCookies(cookies, { source: `playwright-harvest(#${attempt})`, persist: true });
+      const cookies = await runHarvest();
+      const source = HARVESTER_URL
+        ? `http-harvester(#${attempt})`
+        : `playwright-harvest(#${attempt})`;
+      return applyCookies(cookies, { source, persist: true });
     } catch (err) {
       lastErr = err;
       console.warn(`WAF harvest attempt ${attempt}/${HARVEST_MAX_RETRIES} failed: ${err.message}`);
@@ -216,7 +254,6 @@ async function harvestWithRetry() {
 
 async function refreshWafSession({ force = false } = {}) {
   try {
-    // 缓存里如果有未过期的 cookie，先用着；否则强制浏览器采集。
     const cached = loadCachedCookies({ ignoreAge: force });
     if (cached) return cached;
     return await harvestWithRetryAndCheck();
@@ -229,16 +266,20 @@ async function refreshWafSession({ force = false } = {}) {
 
 async function harvestWithRetryAndCheck() {
   if (!AUTO_HARVEST) {
-    // 仅本地显式关闭时才走到这里。
     throw new Error(
-      'AUTO_HARVEST is disabled (WAF_AUTO_HARVEST=0). Re-enable it or run on the playwright image.'
+      'AUTO_HARVEST is disabled (WAF_AUTO_HARVEST=0). Re-enable it or run with the harvester service.'
     );
   }
+  // 远程 harvester 模式不需要本地 playwright，跳过本地检查。
+  if (HARVESTER_URL) {
+    return harvestWithRetry();
+  }
+  // 本地 spawn 模式需要 playwright 可用。
   try {
     await import('playwright');
   } catch {
     throw new Error(
-      'Playwright is not installed. Run on the playwright image (Dockerfile.playwright).'
+      'Playwright is not installed locally. Set WAF_HARVESTER_URL to use a remote harvester, or run on the playwright image.'
     );
   }
   return harvestWithRetry();
@@ -268,8 +309,9 @@ export function getWafCookieHeader() {
 export function getWafSessionInfo() {
   return {
     ready: Boolean(state.cookieHeader),
-    mode: AUTO_HARVEST ? 'headless-browser' : 'disabled',
+    mode: HARVESTER_URL ? 'remote-harvester' : (AUTO_HARVEST ? 'headless-browser' : 'disabled'),
     autoHarvest: AUTO_HARVEST,
+    harvesterUrl: HARVESTER_URL || '',
     source: state.source || '',
     cookieCount: state.cookies.length,
     cookieNames: state.cookies.map((c) => c.name),
@@ -300,7 +342,6 @@ export function isWafHtml(text = '') {
   );
 }
 
-// 启动时预热：读取缓存（如果有且未过期），否则不阻塞地后台触发一次采集。
 try {
   loadCachedCookies({ ignoreAge: true });
 } catch (err) {

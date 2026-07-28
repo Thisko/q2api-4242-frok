@@ -5,7 +5,7 @@ FROM node:22-bookworm-slim
 
 ENV NODE_ENV=production \
     PORT=3000 \
-    WAF_AUTO_HARVEST=0 \
+    WAF_AUTO_HARVEST=1 \
     WAF_COOKIE_CACHE=/app/data/waf-cookies.json \
     TZ=Asia/Shanghai
 

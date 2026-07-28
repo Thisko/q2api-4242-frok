@@ -8,3 +8,5 @@ chrome-profile-waf/
 data/chrome-profile-waf/
 data/waf-cookies.json
 dist/
+waf-harvester/node_modules/
+waf-harvester/data/

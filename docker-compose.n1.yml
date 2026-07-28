@@ -1,0 +1,63 @@
+# qwen-2api on N1 (OpenWrt, arm64)
+# 参考grok2api 侧车架构：主服务（轻量，无 Chromium）+ waf-harvester（含 Chromium）
+# 主服务通过 WAF_HARVESTER_URL=http://waf-harvester:3100 调用侧车采集 WAF cookie
+#
+# 镜像需在 x86_64 上交叉构建后 load 到 N1，参考 scripts/build-all.sh
+services:
+  qwen-2api:
+    container_name: qwen-2api
+    image: qwen-2api:1.2.0-arm64
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      PORT: "3000"
+      TZ: Asia/Shanghai
+      NODE_ENV: production
+      # 强制无头浏览器采集
+      WAF_AUTO_HARVEST: "1"
+      # 通过 HTTP 调用侧车 harvester，主镜像不需要装 Chromium
+      WAF_HARVESTER_URL: http://waf-harvester:3100
+      WAF_COOKIE_CACHE: /app/data/waf-cookies.json
+      WAF_COOKIE_REFRESH_MS: "1200000"
+      WAF_HARVEST_RETRIES: "3"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      waf-harvester:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+
+  # WAF cookie 采集器：独立的无头浏览器服务
+  # 主服务通过 HTTP 调用它的 /harvest 接口； Chromium 只在这个容器里
+  waf-harvester:
+    container_name: waf-harvester
+    image: waf-harvester:1.0.0-arm64
+    restart: unless-stopped
+    environment:
+      PORT: "3100"
+      TZ: Asia/Shanghai
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
+      WAF_PROFILE_DIR: /data/chrome-profile-waf
+      WAF_COOKIE_WARMUP_MS: "5000"
+    volumes:
+      - waf-harvester-data:/data
+    shm_size: "256mb"
+    security_opt:
+      - seccomp:unconfined
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3100/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  waf-harvester-data:
