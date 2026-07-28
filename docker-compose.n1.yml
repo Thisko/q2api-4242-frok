@@ -9,11 +9,11 @@ services:
     image: ghcr.io/thisko/q2api:latest
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:${PORT:-3000}"
     env_file:
       - .env
     environment:
-      PORT: "3000"
+      PORT: "${PORT:-3000}"
       TZ: Asia/Shanghai
       NODE_ENV: production
       # 强制无头浏览器采集
@@ -29,7 +29,7 @@ services:
       waf-harvester:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
       timeout: 8s
       retries: 5
