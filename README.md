@@ -1,6 +1,6 @@
 # q2api
 
-Qwen Web Chat → OpenAI API 代理，面向 N1（OpenWrt, arm64）。
+QW Web Chat → OpenAI API 代理，面向 N1（OpenWrt, arm64）。
 
 侧车架构：主服务（轻量，无 Chromium）+ waf-harvester（含 Chromium 的 WAF cookie 采集器）。
 WAF cookie 由 harvester 用无头浏览器自动采集，无需手动导入。
@@ -19,7 +19,7 @@ docker login ghcr.io -u Thisko -p ghp_你的token
 git clone https://github.com/Thisko/q2api-4242-frok.git
 cd q2api-4242-frok
 cp .env.example .env
-vi .env          # 必填：QWEN_ACCOUNTS=邮箱:密码
+vi .env          # 必填：QW_ACCOUNTS=邮箱:密码
 docker compose -f docker-compose.n1.yml pull
 docker compose -f docker-compose.n1.yml up -d
 ```
@@ -47,7 +47,7 @@ docker compose -f docker-compose.n1.yml pull && up -d
 ```bash
 curl -X POST http://127.0.0.1:3000/v1/images/generations \
   -H "Content-Type: application/json" \
-  -d '{"model":"qwen-image","prompt":"一只橘猫","n":1}'
+  -d '{"model":"Qw-image","prompt":"一只橘猫","n":1}'
 ```
 
 ## 离线/无外网 N1：用 tar 导入（备用）
@@ -57,7 +57,7 @@ GitHub Actions 每次 tag 会构建镜像，如需 tar 下载：
 - 或本地用 `scripts/build-all.sh` 交叉构建
 
 ```bash
-docker load -i qwen-2api-1.2.0-arm64.tar
+docker load -i Qw-2api-1.2.0-arm64.tar
 docker load -i waf-harvester-1.0.0-arm64.tar
 # 此时需把 docker-compose.n1.yml 的 image 改回本地 tag
 docker compose -f docker-compose.n1.yml up -d
