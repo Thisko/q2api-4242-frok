@@ -23,8 +23,8 @@ jobs:
       - name: Build Playwright image
         uses: docker/build-push-action@v6
         with:
-          context: ./q2api-4242-frok
-          file: ./q2api-4242-frok/Dockerfile.playwright
+          context: .
+          file: ./Dockerfile.playwright
           platforms: linux/arm64
           load: true
           tags: qwen-2api:playwright
